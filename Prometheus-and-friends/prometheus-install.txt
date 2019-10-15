@@ -1,0 +1,295 @@
+2.Oct.2019
+
+Monitoring using Prometheus, Node Exporter and Grafana
+
+Optionally AlertManager can be used to send out alerts for pre defined events
+
+
+https://github.com/prometheus/prometheus
+
+
+Ports used:
+
+Prometheus 9090
+Node Exporter 9100
+Grafana 3000
+AlertManager 9093
+
+If the monitoring is to be setup on AWS make sure security groups are correctly configured.
+
+Full list of ports available from https://github.com/prometheus/prometheus/wiki/Default-port-allocations
+
+
+The document was prepared using Amazon Linux instances. So package management and service management
+commands will vary on other variants of Linuxes. Please substitute them accordingly.
+
+
+A) Prometheus
+
+
+Get the URL for latest Prometheus from
+https://prometheus.io/download/
+
+
+sudo su -
+
+useradd --no-create-home --shell /bin/false prometheus
+
+mkdir /etc/prometheus
+
+mkdir /var/lib/prometheus
+
+chown prometheus:prometheus /etc/prometheus
+
+chown prometheus:prometheus /var/lib/prometheus
+
+cd /tmp
+
+curl -LO https://github.com/prometheus/prometheus/releases/download/v2.13.0-rc.0/prometheus-2.13.0-rc.0.linux-amd64.tar.gz
+
+tar -xvf prometheus-2.13.0-rc.0.linux-amd64.tar.gz
+
+cd prometheus-2.13.0-rc.0.linux-amd64
+
+
+cp prometheus /usr/local/bin/
+cp promtool /usr/local/bin
+chown prometheus:prometheus /usr/local/bin/prometheus
+chown prometheus:prometheus /usr/local/bin/promtool
+
+
+cp -r consoles /etc/prometheus
+cp -r console_libraries /etc/prometheus
+chown -R prometheus:prometheus /etc/prometheus/consoles
+chown -R prometheus:prometheus /etc/prometheus/console_libraries
+
+
+vi /etc/prometheus/prometheus.yml
+
+  global:
+  scrape_interval: 10s
+
+scrape_configs:
+  - job_name: 'prometheus'
+    scrape_interval: 5s
+    static_configs:
+
+
+chown prometheus:prometheus /etc/prometheus/prometheus.yml
+
+
+// NOTE : Prometheus listens on port 9090 by default
+// For my testing, I am setting port to 8080
+// From https://stackoverflow.com/questions/47414593/configure-prometheus-to-use-non-default-port
+
+// Remove on a normal setup
+
+vi /etc/systemd/system/prometheus.service
+
+[Unit]
+Description=Prometheus
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=prometheus
+Group=prometheus
+Type=simple
+ExecStart=/usr/local/bin/prometheus \
+    --config.file /etc/prometheus/prometheus.yml \
+    --storage.tsdb.path /var/lib/prometheus/ \
+    --web.console.templates=/etc/prometheus/consoles \
+    --web.console.libraries=/etc/prometheus/console_libraries \
+    --web.listen-address=:8080
+
+[Install]
+WantedBy=multi-user.target
+
+
+
+systemctl daemon-reload
+systemctl start prometheus
+systemctl status prometheus
+systemctl enable  prometheus
+
+
+http://10.87.16.82:8080/graph
+http://10.87.16.82:8080/metrics       // Take a look at the metrics in this page.
+                                      // It is important to have an understanding of the metrics and
+                                      // metrics names. These are necessary when configuring
+                                      // Dashboards in Grafana.
+http://10.87.16.82:8080/targets
+
+
+B) Node Exporter
+
+Run Node Exporter on nodes you wanted monitored by Node Exporter
+
+Get the URL for latest Node Exporter from
+
+https://prometheus.io/download/
+
+
+Default port used by Node Exporter is 9100
+
+sudo su -
+
+cd /tmp
+
+curl -LO https://github.com/prometheus/node_exporter/releases/download/v0.18.1/node_exporter-0.18.1.linux-amd64.tar.gz
+
+tar -xvf node_exporter-0.18.1.linux-amd64.tar.gz
+cd node_exporter-0.18.1.linux-amd64/
+
+mv node_exporter /usr/local/bin
+
+useradd -rs /bin/false node_exporter
+
+vi /etc/systemd/system/node_exporter.service
+
+[Unit]
+Description=Node Exporter
+After=network.target
+
+[Service]
+User=node_exporter
+Group=node_exporter
+Type=simple
+ExecStart=/usr/local/bin/node_exporter
+
+[Install]
+WantedBy=multi-user.target
+
+systemctl  start node_exporter
+systemctl status  node_exporter
+
+systemctl enable node_exporter
+
+netstat -an | grep 9100
+http://<server-IP>:9100/metrics
+
+Login to the Prometheus server
+
+vi /etc/prometheus/prometheus.yml
+
+Under the scrape config section add the node exporter target as shown below.
+Change 10.142.0.3 with your server IP where you have setup node exporter.
+Job name can be your server hostname or IP for identification purposes.
+
+Now it looks lik this
+
+global:
+  scrape_interval: 10s
+
+scrape_configs:
+  - job_name: 'prometheus'
+    scrape_interval: 5s
+    static_configs:
+    - targets: ['10.142.0.3:9100']
+
+
+systemctl restart prometheus
+
+
+View the new target
+
+http://<prometheus-IP>:9090/targets
+   // State must be up.
+
+
+To visualise the metrics we ue Grafana
+
+
+C) Grafana
+
+Grafana listens on port 3000
+config file :  /etc/grafana/grafana.ini
+
+Detailed discussion about Configuration of Grafana is in here :
+   https://grafana.com/docs/installation/configuration
+
+
+Get the latest rpm download link from the official downloads page and download it
+https://grafana.com/grafana/download?platform=linux
+
+cd /tmp
+wget https://dl.grafana.com/oss/release/grafana-6.4.1-1.x86_64.rpm
+
+// This is for Amazon Linux. Download the correct version for your Linux version and
+// install appropriately
+
+
+yum localinstall grafana-6.4.1-1.x86_64.rpm -y
+If you wish to change the default port Grafana listens
+  vi /etc/grafana/grafana.ini
+        Change the port
+  As I want my Grfana to listen on port 80, I had to do this extra step
+    setcap 'cap_net_bind_service=+ep' /usr/sbin/grafana-server
+      // From  https://grafana.com/docs/installation/configuration/
+
+
+systemctl enable grafana-server
+systemctl start grafana-server
+systemctl status grafana-server
+
+Access Grafana http://<Grafana-IP>:3000
+
+Add Prometheus Source To Grafana
+
+   Click the “Add data source” option from the Grafana homepage
+   Select Prometheus
+   Name = Prometheus (or what ever you wish )
+   URL = http://localhost:8080     // localhost because Proemetheus and Grafana runs on the same
+                                   // instance.
+                                   // 8080 because my proemethues runs on port 8080
+   Access = Server (Default)
+
+   Leave the rest in default settings
+
+   Hit "Save & Test"       // You should see "Data source working"
+
+
+
+Creating dashboards are beyond the notes given here. Click and play :-)
+
+Initial steps will be
+
+  New dashboard
+  Choose Visualization   -- Start with 'Graph'
+
+
+Importing Prebuilt dashboards
+
+Prebuilt dashboards can be imported to save time as building a new dashboard from scratch is a craft on it's own !
+
+For example, this dashboard works with standard node exporter visualising all the Unix related metrics
+
+Use the Dashboard Import function
+
+https://grafana.com/grafana/dashboards/1860
+
+
+
+Hand crafting a Grfana dashboard is discussed in :
+
+https://www.openlogic.com/blog/monitoring-java-applications-prometheus-and-grafana-part-2
+
+Monitoring TomCat server via Grafana
+
+1. tomcat_exporter. This is good. But here is no pre-built Grafana dashboard.
+https://github.com/nlighten/tomcat_exporter/
+
+I followed instructions and metrics are available on http://<tomcat-server>:8080/metrics/
+
+2. JMX exporter. There are pre-built grafana dasboards for this.
+https://github.com/prometheus/jmx_exporter
+
+
+
+
+
+References :
+
+https://devopscube.com/install-configure-prometheus-linux/
+https://devopscube.com/monitor-linux-servers-prometheus-node-exporter/
+https://devopscube.com/integrate-visualize-prometheus-grafana/
